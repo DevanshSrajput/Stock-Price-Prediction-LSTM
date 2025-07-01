@@ -2,38 +2,57 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
-import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 try:
-    from keras.models import Sequential
-    from keras.layers import LSTM, Dense, Dropout
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import LSTM, Dense, Dropout
 except ImportError:
-    from keras.models import Sequential
-    from keras.layers import LSTM, Dense, Dropout
+    try:
+        from keras.models import Sequential
+        from keras.layers import LSTM, Dense, Dropout
+    except ImportError:
+        st.error("❌ TensorFlow/Keras not found. Please install: pip install tensorflow")
+        st.stop()
 
 # -----------------------------
 # Core LSTM Stock Prediction Functions
 # -----------------------------
 
+@st.cache_data
 def download_stock_data(ticker, start_date, end_date):
+    """Download stock data with caching"""
     try:
-        df = yf.download(ticker, start=start_date, end=end_date)
+        df = yf.download(ticker, start=start_date, end=end_date, progress=False)
         if df is None or df.empty:
             raise ValueError(f"No data found for ticker {ticker}")
-        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        
+        # Reset index to make Date a column
+        df = df.reset_index()
+        
+        # Select only necessary columns
+        required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        available_cols = [col for col in required_cols if col in df.columns]
+        df = df[available_cols]
+        
         df.dropna(inplace=True)
         if len(df) == 0:
             raise ValueError(f"No valid data found for ticker {ticker}")
+        
+        # Set Date as index
+        df.set_index('Date', inplace=True)
         return df
     except Exception as e:
         raise ValueError(f"Error downloading data for {ticker}: {str(e)}")
 
 def create_sequences(data, window_size):
+    """Create sequences for LSTM training"""
     X, y = [], []
     for i in range(window_size, len(data)):
         X.append(data[i-window_size:i, 0])
@@ -41,6 +60,7 @@ def create_sequences(data, window_size):
     return np.array(X), np.array(y)
 
 def build_lstm_model(window_size):
+    """Build LSTM model"""
     model = Sequential([
         LSTM(50, return_sequences=True, input_shape=(window_size, 1)),
         Dropout(0.2),
@@ -52,16 +72,20 @@ def build_lstm_model(window_size):
     return model
 
 def forecast_next_days(model, last_seq, scaler, n_days=7):
+    """Forecast future prices"""
     preds = []
     current_seq = last_seq.copy()
     for _ in range(n_days):
-        pred = model.predict(current_seq.reshape(1, len(current_seq), 1), verbose="auto")
+        pred = model.predict(current_seq.reshape(1, len(current_seq), 1), verbose=0)
         preds.append(pred[0,0])
         current_seq = np.append(current_seq[1:], pred[0,0])
     preds_inv = scaler.inverse_transform(np.array(preds).reshape(-1,1))
     return preds_inv.flatten()
 
-# Set page config
+# -----------------------------
+# Streamlit App Configuration
+# -----------------------------
+
 st.set_page_config(
     page_title="LSTM Stock Price Predictor",
     page_icon="📈",
@@ -69,7 +93,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for modern styling
+# Custom CSS
 st.markdown("""
 <style>
     .main-header {
@@ -94,14 +118,13 @@ st.markdown("""
         padding: 0.5rem 2rem;
         border-radius: 25px;
         font-weight: 600;
-        transition: all 0.3s ease;
     }
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-    }
-    .sidebar .stSelectbox > div > div {
-        background-color: #f0f2f6;
+    .forecast-item {
+        padding: 0.5rem;
+        margin: 0.2rem 0;
+        background-color: #f8f9fa;
+        border-radius: 5px;
+        border-left: 4px solid #667eea;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -110,7 +133,10 @@ st.markdown("""
 st.markdown('<h1 class="main-header">📈 LSTM Stock Price Predictor</h1>', unsafe_allow_html=True)
 st.markdown("---")
 
-# Sidebar for parameters
+# -----------------------------
+# Sidebar Configuration
+# -----------------------------
+
 with st.sidebar:
     st.header("🔧 Configuration")
     
@@ -119,7 +145,7 @@ with st.sidebar:
         "Stock Ticker",
         value="AAPL",
         help="Enter the stock symbol (e.g., AAPL, GOOGL, TSLA)"
-    ).upper()
+    ).upper().strip()
     
     # Date range
     col1, col2 = st.columns(2)
@@ -165,37 +191,45 @@ with st.sidebar:
     # Predict button
     predict_button = st.button("🚀 Run Prediction", use_container_width=True)
 
-# Main content area
+# -----------------------------
+# Main Application Logic
+# -----------------------------
+
 if predict_button:
+    if not ticker:
+        st.error("❌ Please enter a stock ticker symbol")
+        st.stop()
+    
     # Create columns for layout
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        # Progress bar
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        # Download data
-        status_text.text("📥 Downloading stock data...")
-        progress_bar.progress(10)
+        # Progress tracking
+        progress_container = st.container()
+        with progress_container:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
         
         try:
-            with st.spinner("Fetching data..."):
-                df = download_stock_data(ticker, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+            # Step 1: Download data
+            status_text.text("📥 Downloading stock data...")
+            progress_bar.progress(10)
             
-            if len(df) < window_size + forecast_days + 10:
-                st.error("❌ Not enough data for the selected parameters. Please adjust the date range or window size.")
+            df = download_stock_data(ticker, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+            
+            if len(df) < window_size + forecast_days + 20:
+                st.error(f"❌ Not enough data for the selected parameters. Found {len(df)} rows, need at least {window_size + forecast_days + 20}.")
                 st.stop()
             
             status_text.text("✅ Data downloaded successfully!")
             progress_bar.progress(20)
             
-            # Display basic stock info
+            # Display stock info in sidebar column
             with col2:
                 st.subheader(f"📊 {ticker} Overview")
-                latest_price = df['Close'].iloc[-1]
-                price_change = df['Close'].iloc[-1] - df['Close'].iloc[-2]
-                price_change_pct = (price_change / df['Close'].iloc[-2]) * 100
+                latest_price = float(df['Close'].iloc[-1])
+                price_change = float(df['Close'].iloc[-1] - df['Close'].iloc[-2])
+                price_change_pct = (price_change / float(df['Close'].iloc[-2])) * 100
                 
                 st.metric(
                     label="Latest Price",
@@ -205,12 +239,15 @@ if predict_button:
                 
                 st.metric("Data Points", len(df))
                 st.metric("Date Range", f"{len(df)} days")
-                
-            # Prepare data
+            
+            # Step 2: Prepare data
             status_text.text("🔄 Preparing data...")
             progress_bar.progress(30)
             
-            close_data = np.array(df['Close'].values).reshape(-1, 1)
+            # Convert to numpy array and handle any potential issues
+            close_prices = df['Close'].values.astype(np.float32)
+            close_data = close_prices.reshape(-1, 1)
+            
             scaler = MinMaxScaler(feature_range=(0, 1))
             scaled_close = scaler.fit_transform(close_data)
             
@@ -221,26 +258,27 @@ if predict_button:
             X_train, X_test = X[:split], X[split:]
             y_train, y_test = y[:split], y[split:]
             
-            # Build and train model
+            # Step 3: Build and train model
             status_text.text("🧠 Training LSTM model...")
             progress_bar.progress(50)
             
             model = build_lstm_model(window_size)
             
+            # Training with progress tracking
             with st.spinner("Training model... This may take a few minutes."):
                 history = model.fit(
                     X_train, y_train,
                     epochs=epochs,
                     batch_size=32,
                     validation_split=0.2,
-                    verbose="auto"
+                    verbose=0
                 )
             
+            # Step 4: Make predictions
             status_text.text("📊 Making predictions...")
             progress_bar.progress(80)
             
-            # Make predictions
-            y_pred = model.predict(X_test, verbose="auto")
+            y_pred = model.predict(X_test, verbose=0)
             y_test_inv = scaler.inverse_transform(y_test.reshape(-1, 1))
             y_pred_inv = scaler.inverse_transform(y_pred)
             
@@ -251,12 +289,15 @@ if predict_button:
             status_text.text("✅ Prediction completed!")
             progress_bar.progress(100)
             
-            # Display results
+            # Clear progress indicators
+            progress_container.empty()
+            
+            # Step 5: Display results
             st.subheader("📈 Prediction Results")
             
-            # Metrics
-            col1, col2, col3 = st.columns(3)
-            with col1:
+            # Metrics display
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+            with metric_col1:
                 st.markdown(f"""
                 <div class="metric-container">
                     <h3>RMSE</h3>
@@ -264,7 +305,7 @@ if predict_button:
                 </div>
                 """, unsafe_allow_html=True)
             
-            with col2:
+            with metric_col2:
                 st.markdown(f"""
                 <div class="metric-container">
                     <h3>MAE</h3>
@@ -272,8 +313,8 @@ if predict_button:
                 </div>
                 """, unsafe_allow_html=True)
             
-            with col3:
-                accuracy = max(0, 100 - (mae / y_test_inv.mean()) * 100)
+            with metric_col3:
+                accuracy = max(0, 100 - (mae / np.mean(y_test_inv)) * 100)
                 st.markdown(f"""
                 <div class="metric-container">
                     <h3>Accuracy</h3>
@@ -281,11 +322,12 @@ if predict_button:
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Interactive plot using Plotly
+            # Main prediction chart
             fig = go.Figure()
             
             # Create date index for test data
-            test_dates = df.index[split + window_size:]
+            test_start_idx = split + window_size
+            test_dates = df.index[test_start_idx:test_start_idx + len(y_test_inv)]
             
             fig.add_trace(go.Scatter(
                 x=test_dates,
@@ -314,35 +356,40 @@ if predict_button:
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # Forecast future prices
+            # Future forecast section
             st.subheader("🔮 Future Price Forecast")
             
             last_seq = scaled_close[-window_size:]
             future_predictions = forecast_next_days(model, last_seq, scaler, n_days=forecast_days)
             
-            # Create future dates
+            # Create future dates (business days only)
             last_date = df.index[-1]
-            future_dates = [last_date + timedelta(days=i+1) for i in range(forecast_days)]
+            future_dates = []
+            current_date = last_date
+            for i in range(forecast_days):
+                current_date += timedelta(days=1)
+                # Skip weekends for stock predictions
+                while current_date.weekday() >= 5:  # 5=Saturday, 6=Sunday
+                    current_date += timedelta(days=1)
+                future_dates.append(current_date)
             
-            # Display forecast
-            forecast_df = pd.DataFrame({
-                'Date': future_dates,
-                'Predicted Price': future_predictions
-            })
+            # Display forecast in two columns
+            forecast_col1, forecast_col2 = st.columns([1, 1])
             
-            col1, col2 = st.columns([1, 1])
+            with forecast_col1:
+                st.write("**📈 Future Price Predictions**")
+                for i, (date, price) in enumerate(zip(future_dates, future_predictions)):
+                    st.markdown(f"""
+                    <div class="forecast-item">
+                        <strong>Day {i+1}</strong> ({date.strftime('%Y-%m-%d')}): <strong>${price:.2f}</strong>
+                    </div>
+                    """, unsafe_allow_html=True)
             
-            with col1:
-                st.dataframe(
-                    forecast_df.style.format({'Predicted Price': '${:.2f}'}),
-                    use_container_width=True
-                )
-            
-            with col2:
-                # Mini forecast chart
+            with forecast_col2:
+                # Forecast chart
                 fig_forecast = go.Figure()
                 
-                # Add historical data (last 30 days)
+                # Add recent historical data (last 30 days)
                 recent_data = df['Close'].tail(30)
                 fig_forecast.add_trace(go.Scatter(
                     x=recent_data.index,
@@ -372,15 +419,15 @@ if predict_button:
                 
                 st.plotly_chart(fig_forecast, use_container_width=True)
             
-            # Training history
-            with st.expander("📊 Training History"):
+            # Training history (expandable)
+            with st.expander("📊 Training History", expanded=False):
                 if history and hasattr(history, 'history'):
                     fig_history = go.Figure()
                     
-                    epochs_range = range(1, len(history.history['loss']) + 1)
+                    epochs_range = list(range(1, len(history.history['loss']) + 1))
                     
                     fig_history.add_trace(go.Scatter(
-                        x=list(epochs_range),
+                        x=epochs_range,
                         y=history.history['loss'],
                         mode='lines',
                         name='Training Loss',
@@ -389,7 +436,7 @@ if predict_button:
                     
                     if 'val_loss' in history.history:
                         fig_history.add_trace(go.Scatter(
-                            x=list(epochs_range),
+                            x=epochs_range,
                             y=history.history['val_loss'],
                             mode='lines',
                             name='Validation Loss',
@@ -409,13 +456,13 @@ if predict_button:
         
         except Exception as e:
             st.error(f"❌ An error occurred: {str(e)}")
-            st.stop()
+            st.error("Please try adjusting the parameters or selecting a different stock.")
 
 else:
     # Welcome screen
-    col1, col2, col3 = st.columns([1, 2, 1])
+    welcome_col1, welcome_col2, welcome_col3 = st.columns([1, 2, 1])
     
-    with col2:
+    with welcome_col2:
         st.markdown("""
         <div style="text-align: center; padding: 3rem;">
             <h2>🎯 Welcome to LSTM Stock Predictor</h2>
@@ -430,26 +477,25 @@ else:
         # Feature highlights
         st.markdown("### ✨ Features")
         
-        col1, col2 = st.columns(2)
+        feature_col1, feature_col2 = st.columns(2)
         
-        with col1:
+        with feature_col1:
             st.markdown("""
             - 🧠 **Deep Learning**: Advanced LSTM neural networks
             - 📈 **Real-time Data**: Live stock data from Yahoo Finance
             - 🎯 **Accurate Predictions**: High-precision forecasting
             """)
         
-        with col2:
+        with feature_col2:
             st.markdown("""
             - 📊 **Interactive Charts**: Beautiful visualizations
             - 🔮 **Future Forecasting**: Predict multiple days ahead
             - ⚡ **Fast Processing**: Optimized for quick results
             """)
 
-# Run the app
-if __name__ == "__main__":
-    st.markdown("---")
-    st.markdown(
-        "<p style='text-align: center; color: #666;'>Built with ❤️ using Streamlit and TensorFlow</p>",
-        unsafe_allow_html=True
-    )
+# Footer
+st.markdown("---")
+st.markdown(
+    "<p style='text-align: center; color: #666;'>Built with ❤️ using Streamlit and TensorFlow</p>",
+    unsafe_allow_html=True
+)

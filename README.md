@@ -8,6 +8,17 @@ A **modern, intuitive web application** for predicting stock prices using LSTM n
 
 [![Watch The Video](https://github.com/DevanshSrajput/Stock-Price-Prediction-LSTM/blob/main/Stock-Price-Prediction-LSTM.png)](https://youtu.be/j_D2_mGzX8I)
 
+## 📸 ScreenShots
+
+<div style="display: flex; flex-wrap: wrap; gap: 10px;">
+  <img src="Screenshots/Home.png" width="200"/>
+  <img src="Screenshots/Graph.png" width="200"/>
+  <img src="Screenshots/Prediction.png" width="200"/>
+  <img src="Screenshots/Training.png" width="200"/>
+</div>
+
+---
+
 ## ✨ Features
 
 - **🧠 Deep Learning Power:** Advanced LSTM neural networks that actually learn from market patterns

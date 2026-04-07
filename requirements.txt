@@ -5,4 +5,6 @@ numpy
 matplotlib
 yfinance
 scikit-learn
-tensorflow
+tensorflow>=2.13,<2.21; platform_system != "Darwin"
+tensorflow-macos>=2.13,<2.17; platform_system == "Darwin" and platform_machine == "arm64"
+tensorflow-metal>=1.1.0; platform_system == "Darwin" and platform_machine == "arm64"
